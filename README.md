@@ -2,7 +2,7 @@
 
 ## 📊 Project Overview
 
-This project implements a comprehensive Machine Learning solution for predicting house prices in Bengaluru, India. The analysis includes data exploration, preprocessing, multiple model comparison, and feature importance analysis with **dynamic model selection**.
+This project implements a comprehensive Machine Learning solution for predicting house prices in Bengaluru, India. The analysis includes data exploration, preprocessing, multiple model comparison, feature importance analysis, and **explainable AI (XAI) with SHAP** for dynamic model selection and transparency.
 
 ## 🎯 Key Features
 
@@ -14,6 +14,18 @@ This project implements a comprehensive Machine Learning solution for predicting
 - **Feature Importance**: Analysis of key factors affecting house prices
 - **Interactive Predictions**: Sample prediction functionality with all models
 - **Prediction Statistics**: Shows range, mean, and model consensus
+- **Modern UI**: Animated, uniform cards for model outputs with icons and badges
+- **Insightful Graphs**: Predicted price, pie chart, consensus, and feature importance
+- **Explainable AI (XAI)**: SHAP force plot, waterfall plot, and summary plot for every prediction
+
+## 🧠 Explainable AI (XAI) with SHAP
+
+After every prediction, the app generates:
+- **SHAP Force Plot**: Shows how each feature pushed the prediction up or down for your input.
+- **SHAP Waterfall Plot**: Visualizes the additive contributions of each feature to the final prediction.
+- **SHAP Summary Plot**: Shows the overall importance of each feature across the dataset.
+
+These plots help users understand why the model made its prediction, increasing trust and transparency.
 
 ## 📈 Models Implemented
 
@@ -45,7 +57,6 @@ This project implements a comprehensive Machine Learning solution for predicting
    ```bash
    # Make sure you have the following files in your directory:
    # - Bengaluru_House_Data.csv
-   # - house_price_prediction.py
    # - requirements.txt
    ```
 
@@ -54,10 +65,26 @@ This project implements a comprehensive Machine Learning solution for predicting
    pip install -r requirements.txt
    ```
 
-3. **Run the analysis**
+3. **Run the web app**
    ```bash
-   python house_price_prediction.py
+   python app.py
    ```
+
+4. **Visit**
+   - Open your browser and go to: http://localhost:5000
+
+## 🖥️ User Experience
+
+- **Animated, uniform cards** for model predictions, each with a model icon and a "Best" badge for the most stable model.
+- **Four insightful graphs**: Model vs. Predicted Price, Model Proportion Pie Chart, Model Consensus, Feature Importance.
+- **SHAP explainability**: See why the model predicted the price, with force, waterfall, and summary plots.
+- **Modern, responsive UI**: Works on desktop and mobile.
+
+## 🧩 SHAP Visualizations Explained
+
+- **Force Plot**: Shows how each feature contributed to the specific prediction (red = increases price, blue = decreases price).
+- **Waterfall Plot**: Breaks down the prediction into additive feature contributions.
+- **Summary Plot**: Shows which features are most important overall for the model.
 
 ## 📊 Expected Results
 

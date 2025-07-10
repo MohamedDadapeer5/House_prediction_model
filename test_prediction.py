@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Simple test script to verify house price prediction functionality with all models
-"""
-
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import RandomForestRegressor, GradientBoostingRegressor

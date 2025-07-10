@@ -13,6 +13,10 @@ import os
 import re
 import json
 from datetime import datetime
+import matplotlib.pyplot as plt
+import shap
+import matplotlib
+matplotlib.use('Agg')
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'  # Change this in production
@@ -99,7 +103,8 @@ def load_model_and_data():
     
     # Create location features
     location_counts = df['location'].value_counts()
-    df['location_frequency'] = df['location'].map(location_counts)
+    location_counts_dict = location_counts.to_dict() if hasattr(location_counts, 'to_dict') else dict(location_counts)
+    df['location_frequency'] = df['location'].apply(lambda x: location_counts_dict.get(x, 1))
     
     # Encode categorical variables
     categorical_cols = ['area_type', 'location']
@@ -139,12 +144,12 @@ def load_model_and_data():
     rf.fit(X, y)
     models['Random Forest'] = rf
     
-    # Gradient Boosting
+
     gb = GradientBoostingRegressor(n_estimators=100, random_state=42)
     gb.fit(X, y)
     models['Gradient Boosting'] = gb
     
-    # XGBoost
+
     if XGBRegressor is not None:
         xgb = XGBRegressor(n_estimators=100, random_state=42)
         xgb.fit(X, y)
@@ -342,7 +347,7 @@ def home():
     
     sample_properties = get_sample_properties()
     return render_template('home.html', 
-                         username=session['username'],
+                         username=session.get('username', 'User'),
                          properties=sample_properties)
 
 @app.route('/predict', methods=['GET', 'POST'])
@@ -353,6 +358,10 @@ def predict_page():
         return redirect(url_for('login'))
     
     if request.method == 'GET':
+        # Defensive: Ensure data is loaded
+        if data is None:
+            flash('Data not loaded. Please restart the app.', 'error')
+            return redirect(url_for('login'))
         # Get unique values for dropdowns - Fix sorting issue with mixed data types
         area_types = sorted(data['area_type'].unique().tolist())
         
@@ -362,13 +371,17 @@ def predict_page():
         locations = sorted([str(loc) for loc in locations if pd.notna(loc) and str(loc).strip()])
         
         return render_template('predict.html', 
-                             username=session['username'],
+                             username=session.get('username', 'User'),
                              area_types=area_types, 
                              locations=locations,
                              prediction_stats=None)
     
     # Handle POST request for prediction
     try:
+        # Defensive: Ensure data is loaded
+        if data is None:
+            flash('Data not loaded. Please restart the app.', 'error')
+            return redirect(url_for('login'))
         # Get form data
         area_type = request.form['area_type']
         location = request.form['location']
@@ -392,6 +405,9 @@ def predict_page():
         is_ready_to_move = 1 if availability == 'Ready To Move' else 0
         
         # Encode categorical variables
+        if not label_encoders or 'area_type' not in label_encoders or 'location' not in label_encoders:
+            flash('Model not loaded properly. Please restart the app.', 'error')
+            return redirect(url_for('predict_page'))
         area_type_encoded = label_encoders['area_type'].transform([area_type])[0]
         location_encoded = label_encoders['location'].transform([location])[0]
         
@@ -407,42 +423,188 @@ def predict_page():
         
         # Predict with all models
         results = {}
+        model_metrics = {}
+        r2_scores = []
+        rmse_scores = []
         for name, mdl in models.items():
             if name == 'Linear Regression':
-                pred = mdl.predict(scaler.transform(features))[0]
+                if scaler is not None:
+                    pred = mdl.predict(scaler.transform(features))[0]
+                else:
+                    flash('Scaler not loaded. Please restart the app.', 'error')
+                    return redirect(url_for('predict_page'))
             else:
                 pred = mdl.predict(features)[0]
             results[name] = round(pred, 2)
-        
-        # Calculate mean of all predictions
+            # Calculate metrics for each model using training data
+            # Use the same features as in training
+            if name == 'Linear Regression' and scaler is not None:
+                X_train = scaler.transform(models[name].X) if hasattr(models[name], 'X') else scaler.transform(features)
+                y_train = models[name].y if hasattr(models[name], 'y') else [pred]
+                r2 = mdl.score(X_train, y_train)
+                y_pred = mdl.predict(X_train)
+            else:
+                X_train = models[name].X if hasattr(models[name], 'X') else features
+                y_train = models[name].y if hasattr(models[name], 'y') else [pred]
+                r2 = mdl.score(X_train, y_train)
+                y_pred = mdl.predict(X_train)
+            from sklearn.metrics import mean_squared_error
+            rmse = np.sqrt(mean_squared_error(y_train, y_pred))
+            r2_scores.append(r2)
+            rmse_scores.append(rmse)
+            if hasattr(mdl, 'feature_importances_'):
+                fi = mdl.feature_importances_
+            else:
+                fi = None
+            model_metrics[name] = {'r2': r2, 'rmse': rmse, 'feature_importance': fi}
         mean_prediction = np.mean(list(results.values()))
-        
-        # Find model with prediction closest to the mean (most stable/representative)
         best_model = min(results, key=lambda k: abs(results[k] - mean_prediction))
-        
-        # Calculate prediction statistics for better insights
-        prediction_stats = {
-            'mean': round(mean_prediction, 2),
-            'min': round(min(results.values()), 2),
-            'max': round(max(results.values()), 2),
-            'range': round(max(results.values()) - min(results.values()), 2)
-        }
-        
+        # --- Generate Graphs ---
+        import os
+        import matplotlib.pyplot as plt
+        from matplotlib.ticker import MaxNLocator
+        # 1. Model vs. Predicted Price
+        plt.figure(figsize=(7,5))
+        bars = plt.bar(list(results.keys()), list(results.values()), color=[('green' if k==best_model else 'skyblue') for k in results.keys()])
+        plt.title('Model vs. Predicted Price')
+        plt.ylabel('Predicted Price (Lakhs)')
+        plt.xlabel('Model')
+        plt.xticks(rotation=15)
+        for bar in bars:
+            yval = bar.get_height()
+            plt.text(bar.get_x() + bar.get_width()/2, yval + 2, f'{yval:.2f}', ha='center', va='bottom', fontsize=10)
+        plt.tight_layout()
+        price_chart = os.path.join('static', 'model_pred_price.png')
+        plt.savefig(price_chart)
+        plt.close()
+       
+        # 4. Feature Importance (for best tree-based model)
+        tree_model = None
+        for m in ['Random Forest', 'Gradient Boosting', 'XGBoost']:
+            if m in models and hasattr(models[m], 'feature_importances_'):
+                tree_model = models[m]
+                break
+        feature_chart = None
+        if tree_model is not None:
+            feature_names = ['total_sqft', 'bath', 'balcony', 'bedrooms', 'is_ready_to_move', 'location_frequency', 'area_type_encoded', 'location_encoded']
+            importances = tree_model.feature_importances_
+            indices = np.argsort(importances)[::-1]
+            plt.figure(figsize=(8,5))
+            plt.bar([feature_names[i] for i in indices], importances[indices], color='teal')
+            plt.title('Feature Importance (Best Tree Model)')
+            plt.ylabel('Importance')
+            plt.xlabel('Feature')
+            plt.xticks(rotation=30)
+            plt.tight_layout()
+            feature_chart = os.path.join('static', 'feature_importance.png')
+            plt.savefig(feature_chart)
+            plt.close()
+        # 5. Pie chart: Proportion of each model's predicted price
+        plt.figure(figsize=(6,6))
+        prices = list(results.values())
+        labels = list(results.keys())
+        pie_colors = ['#4e79a7', '#f28e2b', '#e15759', '#76b7b2']
+        plt.pie(prices, labels=labels, autopct='%1.1f%%', startangle=140, colors=pie_colors[:len(prices)])
+        plt.title('Proportion of Each Model\'s Predicted Price')
+        pie_chart = os.path.join('static', 'model_pie.png')
+        plt.savefig(pie_chart)
+        plt.close()
+        # 6. Consensus bar: Absolute difference from mean prediction
+        plt.figure(figsize=(7,5))
+        mean_pred = mean_prediction
+        diffs = [abs(p - mean_pred) for p in prices]
+        plt.barh(labels, diffs, color='coral')
+        plt.xlabel('Absolute Difference from Mean (Lakhs)')
+        plt.title('Model Consensus (Lower is More Stable)')
+        for i, v in enumerate(diffs):
+            plt.text(v + 1, i, f'{v:.2f}', va='center', fontsize=10)
+        plt.tight_layout()
+        consensus_chart = os.path.join('static', 'model_consensus.png')
+        plt.savefig(consensus_chart)
+        plt.close()
+        # Pass image filenames to template (show only the 2 main, feature importance, and new 2 charts)
+        chart_files = [price_chart, pie_chart, consensus_chart]
+        if feature_chart:
+            chart_files.append(feature_chart)
+        # SHAP explainability for all models
+        shap_charts_by_model = {}
+        for model_name, mdl in models.items():
+            try:
+                explainer = None
+                shap_values = None
+                feature_names = ['total_sqft', 'bath', 'balcony', 'bedrooms', 'is_ready_to_move', 'location_frequency', 'area_type_encoded', 'location_encoded']
+                model_charts = []
+                # Use only tree-based models for TreeExplainer
+                if model_name in ['Random Forest', 'Gradient Boosting', 'XGBoost']:
+                    explainer = shap.TreeExplainer(mdl)
+                    shap_values = explainer.shap_values(features, check_additivity=False)
+                    # 1. SHAP force plot
+                    shap.initjs()
+                    plt.figure(figsize=(8, 3))
+                    shap.force_plot(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, matplotlib=True, show=False)
+                    shap_chart = os.path.join('static', f'shap_force_{model_name.replace(" ", "_").lower()}.png')
+                    plt.savefig(shap_chart, bbox_inches='tight')
+                    plt.close()
+                    model_charts.append(shap_chart)
+                    # 2. SHAP waterfall plot
+                    plt.figure(figsize=(8, 5))
+                    shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, show=False)
+                    waterfall_chart = os.path.join('static', f'shap_waterfall_{model_name.replace(" ", "_").lower()}.png')
+                    plt.savefig(waterfall_chart, bbox_inches='tight')
+                    plt.close()
+                    model_charts.append(waterfall_chart)
+                    # 3. SHAP summary plot (using training data if available)
+                    if hasattr(mdl, 'feature_importances_') and 'X' in mdl.__dict__:
+                        X_train = mdl.X
+                        shap_values_train = explainer.shap_values(X_train, check_additivity=False)
+                        plt.figure(figsize=(8, 5))
+                        shap.summary_plot(shap_values_train, X_train, feature_names=feature_names, show=False)
+                        summary_chart = os.path.join('static', f'shap_summary_{model_name.replace(" ", "_").lower()}.png')
+                        plt.savefig(summary_chart, bbox_inches='tight')
+                        plt.close()
+                        model_charts.append(summary_chart)
+                elif model_name == 'Linear Regression':
+                    explainer = shap.KernelExplainer(mdl.predict, features)
+                    shap_values = explainer.shap_values(features)
+                    shap.initjs()
+                    # 1. SHAP force plot
+                    plt.figure(figsize=(8, 3))
+                    shap.force_plot(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, matplotlib=True, show=False)
+                    shap_chart = os.path.join('static', f'shap_force_{model_name.replace(" ", "_").lower()}.png')
+                    plt.savefig(shap_chart, bbox_inches='tight')
+                    plt.close()
+                    model_charts.append(shap_chart)
+                    # 2. SHAP waterfall plot
+                    plt.figure(figsize=(8, 5))
+                    shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, show=False)
+                    waterfall_chart = os.path.join('static', f'shap_waterfall_{model_name.replace(" ", "_").lower()}.png')
+                    plt.savefig(waterfall_chart, bbox_inches='tight')
+                    plt.close()
+                    model_charts.append(waterfall_chart)
+                    # 3. SHAP summary plot (using input features as a fallback)
+                    plt.figure(figsize=(8, 5))
+                    shap.summary_plot(shap_values, features, feature_names=feature_names, show=False)
+                    summary_chart = os.path.join('static', f'shap_summary_{model_name.replace(" ", "_").lower()}.png')
+                    plt.savefig(summary_chart, bbox_inches='tight')
+                    plt.close()
+                    model_charts.append(summary_chart)
+                shap_charts_by_model[model_name] = [os.path.basename(f) for f in model_charts]
+            except Exception as shap_ex:
+                print(f'SHAP explanation error for {model_name}: {shap_ex}')
         return render_template('predict.html', 
-                             username=session['username'],
+                             username=session.get('username', 'User'),
                              area_types=sorted(data['area_type'].unique().tolist()),
                              locations=sorted([str(loc) for loc in data['location'].unique().tolist() if pd.notna(loc) and str(loc).strip()]),
-                             prediction_results=results,
-                             best_model=best_model,
-                             prediction_stats=prediction_stats)
-        
+                             prediction_stats={
+                                 'results': results,
+                                 'mean_prediction': mean_prediction,
+                                 'best_model': best_model,
+                                 'chart_files': [os.path.basename(f) for f in chart_files],
+                                 'shap_charts_by_model': shap_charts_by_model
+                             })
     except Exception as e:
-        return render_template('predict.html', 
-                             username=session['username'],
-                             area_types=sorted(data['area_type'].unique().tolist()),
-                             locations=sorted([str(loc) for loc in data['location'].unique().tolist() if pd.notna(loc) and str(loc).strip()]),
-                             error=str(e),
-                             prediction_stats=None)
+        flash(f'Prediction error: {str(e)}', 'error')
+        return redirect(url_for('predict_page'))
 
 @app.route('/about')
 def about():
