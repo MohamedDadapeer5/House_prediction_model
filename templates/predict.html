@@ -427,6 +427,14 @@
                     <i class="fas fa-exclamation-triangle me-2"></i>
                     <span id="errorMessage"></span>
                 </div>
+                <!-- Flash Messages -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                  {% if messages %}
+                    {% for category, message in messages %}
+                      <div class="alert alert-{{ category }} mt-3">{{ message }}</div>
+                    {% endfor %}
+                  {% endif %}
+                {% endwith %}
 
                 <!-- Result Container -->
                 {% if prediction_stats %}
@@ -454,27 +462,33 @@
                     </div>
                     <p><strong>Best Model:</strong> {{ prediction_stats['best_model'] }}</p>
                     <p><strong>Mean Prediction:</strong> ₹ {{ prediction_stats['mean_prediction']|round(2) }}</p>
+                    {% if prediction_stats and prediction_stats.explainable_ai_text %}
+                    <div class="explainable-ai-text" style="margin:20px 0; padding:15px; background:#f8f9fa; border-radius:8px; color:#222;">
+                        <h4 style="color:#764ba2;"><i class="fas fa-robot me-2"></i>AI Explanation</h4>
+                        <p>{{ prediction_stats.explainable_ai_text }}</p>
+                    </div>
+                    {% endif %}
                     <hr/>
                     <h4>Model Performance & Insights</h4>
                     <div class="row">
                         {% if prediction_stats['chart_files']|length > 0 %}
                         <div class="col-md-6 mb-3">
-                            <img src="/static/{{ prediction_stats['chart_files'][0] }}" alt="Prediction Chart" class="img-fluid rounded shadow">
+                            <img src="{{ url_for('static', filename=prediction_stats['chart_files'][0]) }}" alt="Prediction Chart" class="img-fluid rounded shadow">
                         </div>
                         {% endif %}
                         {% if prediction_stats['chart_files']|length > 1 %}
                         <div class="col-md-6 mb-3">
-                            <img src="/static/{{ prediction_stats['chart_files'][1] }}" alt="Pie Chart" class="img-fluid rounded shadow">
+                            <img src="{{ url_for('static', filename=prediction_stats['chart_files'][1]) }}" alt="Pie Chart" class="img-fluid rounded shadow">
                         </div>
                         {% endif %}
                         {% if prediction_stats['chart_files']|length > 2 %}
                         <div class="col-md-6 mb-3">
-                            <img src="/static/{{ prediction_stats['chart_files'][2] }}" alt="Consensus Chart" class="img-fluid rounded shadow">
+                            <img src="{{ url_for('static', filename=prediction_stats['chart_files'][2]) }}" alt="Consensus Chart" class="img-fluid rounded shadow">
                         </div>
                         {% endif %}
                         {% if prediction_stats['chart_files']|length > 3 %}
                         <div class="col-md-6 mb-3">
-                            <img src="/static/{{ prediction_stats['chart_files'][3] }}" alt="Feature Importance Chart" class="img-fluid rounded shadow">
+                            <img src="{{ url_for('static', filename=prediction_stats['chart_files'][3]) }}" alt="Feature Importance Chart" class="img-fluid rounded shadow">
                         </div>
                         {% endif %}
                     </div>
@@ -488,21 +502,21 @@
                                 {% if shap_files|length > 0 %}
                                 <div class="mb-4">
                                     <div class="text-center mb-2" style="font-weight:500; font-size:1.1rem;">Force Plot</div>
-                                    <img src="/static/{{ shap_files[0] }}" alt="SHAP Force Plot for {{ model }}" class="img-fluid rounded shadow mb-3" style="background:#fff;">
+                                    <img src="{{ url_for('static', filename=shap_files[0]) }}" alt="SHAP Force Plot for {{ model }}" class="img-fluid rounded shadow mb-3" style="background:#fff;">
                                     <div class="text-muted small mb-2 text-center">Shows how each feature pushed the prediction up or down for this input.</div>
                                 </div>
                                 {% endif %}
                                 {% if shap_files|length > 1 %}
                                 <div class="mb-4">
                                     <div class="text-center mb-2" style="font-weight:500; font-size:1.1rem;">Waterfall Plot</div>
-                                    <img src="/static/{{ shap_files[1] }}" alt="SHAP Waterfall Plot for {{ model }}" class="img-fluid rounded shadow mb-3" style="background:#fff;">
+                                    <img src="{{ url_for('static', filename=shap_files[1]) }}" alt="SHAP Waterfall Plot for {{ model }}" class="img-fluid rounded shadow mb-3" style="background:#fff;">
                                     <div class="text-muted small mb-2 text-center">Breaks down the prediction into additive feature contributions.</div>
                                 </div>
                                 {% endif %}
                                 {% if shap_files|length > 2 %}
                                 <div class="mb-2">
                                     <div class="text-center mb-2" style="font-weight:500; font-size:1.1rem;">Summary Plot</div>
-                                    <img src="/static/{{ shap_files[2] }}" alt="SHAP Summary Plot for {{ model }}" class="img-fluid rounded shadow mb-3" style="background:#fff;">
+                                    <img src="{{ url_for('static', filename=shap_files[2]) }}" alt="SHAP Summary Plot for {{ model }}" class="img-fluid rounded shadow mb-3" style="background:#fff;">
                                     <div class="text-muted small mb-2 text-center">Shows the overall importance of each feature for this model.</div>
                                 </div>
                                 {% endif %}

@@ -17,9 +17,31 @@ import matplotlib.pyplot as plt
 import shap
 import matplotlib
 matplotlib.use('Agg')
+from flask_sqlalchemy import SQLAlchemy
 
 app = Flask(__name__)
 app.secret_key = 'your-secret-key-here'  # Change this in production
+# Database configuration (SQLite)
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///house_prediction.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+db = SQLAlchemy(app)
+
+# User model
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=False)
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    password = db.Column(db.String(120), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Prediction model
+class Prediction(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    input_data = db.Column(db.Text, nullable=False)
+    prediction_result = db.Column(db.Text, nullable=False)
+    explanation = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # Global variables for the models
 models = {}
@@ -27,8 +49,7 @@ scaler = None
 label_encoders = {}
 data = None
 
-# Simple user database (in production, use a real database)
-users_db = {}
+
 
 def load_model_and_data():
     """Load the trained models and data"""
@@ -127,36 +148,44 @@ def load_model_and_data():
     X = df_clean[feature_cols]
     y = df_clean['price']
 
-    # Create scaler (for consistency with main script)
-    scaler = StandardScaler()
-    scaler.fit(X)
+    # Split into train and test sets
+    from sklearn.model_selection import train_test_split
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-    # Train all models
+    # Create scaler (fit only on training data)
+    scaler = StandardScaler()
+    scaler.fit(X_train)
+
+    # Train all models on training data
     models.clear()
 
     # Linear Regression (use scaled features)
     lr = LinearRegression()
-    lr.fit(scaler.transform(X), y)
+    lr.fit(scaler.transform(X_train), y_train)
     models['Linear Regression'] = lr
-    
+
     # Random Forest
     rf = RandomForestRegressor(n_estimators=100, random_state=42)
-    rf.fit(X, y)
+    rf.fit(X_train, y_train)
     models['Random Forest'] = rf
-    
 
     gb = GradientBoostingRegressor(n_estimators=100, random_state=42)
-    gb.fit(X, y)
+    gb.fit(X_train, y_train)
     models['Gradient Boosting'] = gb
-    
 
     if XGBRegressor is not None:
         xgb = XGBRegressor(n_estimators=100, random_state=42)
-        xgb.fit(X, y)
+        xgb.fit(X_train, y_train)
         models['XGBoost'] = xgb
-    
+
+    # Store test data for later evaluation (optional)
+    global global_X_test, global_y_test
+    global_X_test = X_test
+    global_y_test = y_test
+
     print("All models loaded successfully!")
-    print(f"Training data shape: {X.shape}")
+    print(f"Training data shape: {X_train.shape}")
+    print(f"Test data shape: {X_test.shape}")
     print(f"Features used: {feature_cols}")
 
 def get_sample_properties():
@@ -295,15 +324,14 @@ def login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
-        
-        if email in users_db and users_db[email]['password'] == password:
-            session['user'] = email
-            session['username'] = users_db[email]['name']
+        user = User.query.filter_by(email=email).first()
+        if user and user.password == password:
+            session['user'] = user.email
+            session['username'] = user.name
             flash('Login successful!', 'success')
             return redirect(url_for('home'))
         else:
             flash('Invalid email or password!', 'error')
-    
     return render_template('login.html')
 
 @app.route('/signup', methods=['GET', 'POST'])
@@ -314,20 +342,16 @@ def signup():
         email = request.form['email']
         password = request.form['password']
         confirm_password = request.form['confirm_password']
-        
         if password != confirm_password:
             flash('Passwords do not match!', 'error')
-        elif email in users_db:
+        elif User.query.filter_by(email=email).first():
             flash('Email already registered!', 'error')
         else:
-            users_db[email] = {
-                'name': name,
-                'password': password,
-                'created_at': datetime.now().isoformat()
-            }
+            new_user = User(name=name, email=email, password=password)
+            db.session.add(new_user)
+            db.session.commit()
             flash('Registration successful! Please login.', 'success')
             return redirect(url_for('login'))
-    
     return render_template('signup.html')
 
 @app.route('/logout')
@@ -426,15 +450,19 @@ def predict_page():
         model_metrics = {}
         r2_scores = []
         rmse_scores = []
+        # Always use numpy array for features
+        features_np = np.array(features)
         for name, mdl in models.items():
             if name == 'Linear Regression':
                 if scaler is not None:
-                    pred = mdl.predict(scaler.transform(features))[0]
+                    pred = mdl.predict(scaler.transform(features_np))[0]
                 else:
                     flash('Scaler not loaded. Please restart the app.', 'error')
                     return redirect(url_for('predict_page'))
+            elif name in ['Random Forest', 'Gradient Boosting', 'XGBoost']:
+                pred = mdl.predict(features_np)[0]
             else:
-                pred = mdl.predict(features)[0]
+                pred = mdl.predict(features_np)[0]
             results[name] = round(pred, 2)
             # Calculate metrics for each model using training data
             # Use the same features as in training
@@ -523,12 +551,53 @@ def predict_page():
         plt.savefig(consensus_chart)
         plt.close()
         # Pass image filenames to template (show only the 2 main, feature importance, and new 2 charts)
-        chart_files = [price_chart, pie_chart, consensus_chart]
+        chart_files = [os.path.basename(price_chart), os.path.basename(pie_chart), os.path.basename(consensus_chart)]
         if feature_chart:
-            chart_files.append(feature_chart)
+            chart_files.append(os.path.basename(feature_chart))
         # SHAP explainability for all models
         shap_charts_by_model = {}
+        # Dynamic explanation for each prediction
+        best_model_features = None
+        best_model_shap = None
+        best_model_importances = None
+        best_model_name = best_model
+        best_model_pred = results[best_model]
+        best_model_diff = abs(best_model_pred - mean_prediction)
+        # Find SHAP values and feature importances for best model
+        if best_model_name in models:
+            mdl = models[best_model_name]
+            feature_names = ['total_sqft', 'bath', 'balcony', 'bedrooms', 'is_ready_to_move', 'location_frequency', 'area_type_encoded', 'location_encoded']
+            if best_model_name in ['Random Forest', 'Gradient Boosting', 'XGBoost']:
+                explainer = shap.TreeExplainer(mdl)
+                shap_values = explainer.shap_values(features_np, check_additivity=False)
+                best_model_shap = shap_values[0] if isinstance(shap_values, np.ndarray) else shap_values
+                best_model_features = dict(zip(feature_names, best_model_shap))
+                if hasattr(mdl, 'feature_importances_'):
+                    best_model_importances = dict(zip(feature_names, mdl.feature_importances_))
+            elif best_model_name == 'Linear Regression':
+                explainer = shap.KernelExplainer(mdl.predict, features_np)
+                shap_values = explainer.shap_values(features_np)
+                best_model_shap = shap_values[0] if isinstance(shap_values, np.ndarray) else shap_values
+                best_model_features = dict(zip(feature_names, best_model_shap))
+        # Get top impacting feature for SHAP and importance
+        top_shap_feature = None
+        top_shap_value = None
+        if best_model_features:
+            top_shap_feature = max(best_model_features, key=lambda k: abs(best_model_features[k]))
+            top_shap_value = best_model_features[top_shap_feature]
+        top_importance_feature = None
+        if best_model_importances:
+            top_importance_feature = max(best_model_importances, key=lambda k: best_model_importances[k])
+        # Build dynamic explanation
+        dynamic_explanation = f"The best model for your input is '{best_model_name}' because its prediction (₹ {best_model_pred} Lakhs) is closest to the mean of all models (₹ {mean_prediction:.2f} Lakhs), with a difference of {best_model_diff:.2f} Lakhs. "
+        if top_shap_feature:
+            dynamic_explanation += f"For this prediction, the feature with the highest impact was '{top_shap_feature}' (SHAP value: {top_shap_value:.2f}), meaning it contributed most to the predicted price. "
+        if top_importance_feature:
+            dynamic_explanation += f"Overall, '{top_importance_feature}' is the most important feature for this model. "
+        dynamic_explanation += "SHAP charts below show how each feature affected your prediction. The consensus chart shows how close each model's prediction is to the mean, and feature importance shows which features matter most for the best model."
         for model_name, mdl in models.items():
+            if model_name not in ['Linear Regression', 'Random Forest', 'Gradient Boosting', 'XGBoost']:
+                continue  # Only process model objects
             try:
                 explainer = None
                 shap_values = None
@@ -537,60 +606,79 @@ def predict_page():
                 # Use only tree-based models for TreeExplainer
                 if model_name in ['Random Forest', 'Gradient Boosting', 'XGBoost']:
                     explainer = shap.TreeExplainer(mdl)
-                    shap_values = explainer.shap_values(features, check_additivity=False)
+                    shap_values = explainer.shap_values(features_np, check_additivity=False)
                     # 1. SHAP force plot
                     shap.initjs()
                     plt.figure(figsize=(8, 3))
-                    shap.force_plot(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, matplotlib=True, show=False)
-                    shap_chart = os.path.join('static', f'shap_force_{model_name.replace(" ", "_").lower()}.png')
+                    shap.force_plot(explainer.expected_value, shap_values[0], features_np[0], feature_names=feature_names, matplotlib=True, show=False)
+                    shap_chart = os.path.join('static', f"shap_force_{model_name.replace(' ', '_').lower()}.png")
                     plt.savefig(shap_chart, bbox_inches='tight')
                     plt.close()
-                    model_charts.append(shap_chart)
+                    model_charts.append(os.path.basename(shap_chart))
                     # 2. SHAP waterfall plot
                     plt.figure(figsize=(8, 5))
-                    shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, show=False)
-                    waterfall_chart = os.path.join('static', f'shap_waterfall_{model_name.replace(" ", "_").lower()}.png')
+                    shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], features_np[0], feature_names=feature_names, show=False)
+                    waterfall_chart = os.path.join('static', f"shap_waterfall_{model_name.replace(' ', '_').lower()}.png")
                     plt.savefig(waterfall_chart, bbox_inches='tight')
                     plt.close()
-                    model_charts.append(waterfall_chart)
+                    model_charts.append(os.path.basename(waterfall_chart))
                     # 3. SHAP summary plot (using training data if available)
                     if hasattr(mdl, 'feature_importances_') and 'X' in mdl.__dict__:
                         X_train = mdl.X
                         shap_values_train = explainer.shap_values(X_train, check_additivity=False)
                         plt.figure(figsize=(8, 5))
                         shap.summary_plot(shap_values_train, X_train, feature_names=feature_names, show=False)
-                        summary_chart = os.path.join('static', f'shap_summary_{model_name.replace(" ", "_").lower()}.png')
+                        summary_chart = os.path.join('static', f"shap_summary_{model_name.replace(' ', '_').lower()}.png")
                         plt.savefig(summary_chart, bbox_inches='tight')
                         plt.close()
-                        model_charts.append(summary_chart)
+                        model_charts.append(os.path.basename(summary_chart))
                 elif model_name == 'Linear Regression':
-                    explainer = shap.KernelExplainer(mdl.predict, features)
-                    shap_values = explainer.shap_values(features)
+                    explainer = shap.KernelExplainer(mdl.predict, features_np)
+                    shap_values = explainer.shap_values(features_np)
                     shap.initjs()
                     # 1. SHAP force plot
                     plt.figure(figsize=(8, 3))
-                    shap.force_plot(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, matplotlib=True, show=False)
-                    shap_chart = os.path.join('static', f'shap_force_{model_name.replace(" ", "_").lower()}.png')
+                    shap.force_plot(explainer.expected_value, shap_values[0], features_np[0], feature_names=feature_names, matplotlib=True, show=False)
+                    shap_chart = os.path.join('static', f"shap_force_{model_name.replace(' ', '_').lower()}.png")
                     plt.savefig(shap_chart, bbox_inches='tight')
                     plt.close()
-                    model_charts.append(shap_chart)
+                    model_charts.append(os.path.basename(shap_chart))
                     # 2. SHAP waterfall plot
                     plt.figure(figsize=(8, 5))
-                    shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], features[0], feature_names=feature_names, show=False)
-                    waterfall_chart = os.path.join('static', f'shap_waterfall_{model_name.replace(" ", "_").lower()}.png')
+                    shap.plots._waterfall.waterfall_legacy(explainer.expected_value, shap_values[0], features_np[0], feature_names=feature_names, show=False)
+                    waterfall_chart = os.path.join('static', f"shap_waterfall_{model_name.replace(' ', '_').lower()}.png")
                     plt.savefig(waterfall_chart, bbox_inches='tight')
                     plt.close()
-                    model_charts.append(waterfall_chart)
+                    model_charts.append(os.path.basename(waterfall_chart))
                     # 3. SHAP summary plot (using input features as a fallback)
                     plt.figure(figsize=(8, 5))
-                    shap.summary_plot(shap_values, features, feature_names=feature_names, show=False)
-                    summary_chart = os.path.join('static', f'shap_summary_{model_name.replace(" ", "_").lower()}.png')
+                    shap.summary_plot(shap_values, features_np, feature_names=feature_names, show=False)
+                    summary_chart = os.path.join('static', f"shap_summary_{model_name.replace(' ', '_').lower()}.png")
                     plt.savefig(summary_chart, bbox_inches='tight')
                     plt.close()
-                    model_charts.append(summary_chart)
-                shap_charts_by_model[model_name] = [os.path.basename(f) for f in model_charts]
+                    model_charts.append(os.path.basename(summary_chart))
+                shap_charts_by_model[model_name] = model_charts
             except Exception as shap_ex:
                 print(f'SHAP explanation error for {model_name}: {shap_ex}')
+        # Save prediction and explanation to database
+        user_email = session.get('user')
+        user = User.query.filter_by(email=user_email).first() if user_email else None
+        if user:
+            input_data = json.dumps({
+                'area_type': area_type,
+                'location': location,
+                'size': size,
+                'total_sqft': float(total_sqft),
+                'bath': int(bath),
+                'balcony': int(balcony),
+                'availability': availability
+            })
+            # Convert all prediction results to float before serializing
+            prediction_results = json.dumps({k: float(v) for k, v in results.items()})
+            explanation = dynamic_explanation
+            new_pred = Prediction(user_id=user.id, input_data=input_data, prediction_result=prediction_results, explanation=explanation)
+            db.session.add(new_pred)
+            db.session.commit()
         return render_template('predict.html', 
                              username=session.get('username', 'User'),
                              area_types=sorted(data['area_type'].unique().tolist()),
@@ -600,7 +688,8 @@ def predict_page():
                                  'mean_prediction': mean_prediction,
                                  'best_model': best_model,
                                  'chart_files': [os.path.basename(f) for f in chart_files],
-                                 'shap_charts_by_model': shap_charts_by_model
+                                 'shap_charts_by_model': shap_charts_by_model,
+                                 'explainable_ai_text': dynamic_explanation
                              })
     except Exception as e:
         flash(f'Prediction error: {str(e)}', 'error')
@@ -612,8 +701,10 @@ def about():
     return render_template('about.html')
 
 if __name__ == '__main__':
+    # Initialize database tables
+    with app.app_context():
+        db.create_all()
     # Load model when starting the app
     load_model_and_data()
-    
     # Run the Flask app
-    app.run(debug=True, host='0.0.0.0', port=5000) 
+    app.run(debug=True, host='0.0.0.0', port=5000)
